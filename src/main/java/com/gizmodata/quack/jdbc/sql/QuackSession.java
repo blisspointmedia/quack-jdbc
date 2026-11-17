@@ -659,12 +659,15 @@ public final class QuackSession implements AutoCloseable {
             return needsMore;
         }
 
-        /** Peek at the first buffered chunk without advancing the cursor. */
         void checkCancelled() { execution.checkCancelled(); }
 
+        /** Obtain the first chunk without consuming it; later batches remain streamed. */
         public DataChunk peekFirstChunk() {
             execution.checkCancelled();
-            return buffered.peek();
+            synchronized (session.ioLock) {
+                while (buffered.isEmpty() && needsMore) fetchMore();
+                return buffered.peek();
+            }
         }
 
         /**

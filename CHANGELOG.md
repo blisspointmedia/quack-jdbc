@@ -14,6 +14,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - Bind cancellation to each statement's execution, including early/late cancellation and buffered results.
+- Obtain the first result batch during `Statement.execute()` so DataGrip can cancel initial
+  query work; later batches continue to stream through `ResultSet.next()`.
 - Continue IDE table discovery when the server explicitly withholds optional function metadata,
   while preserving other authorization and transport errors.
 

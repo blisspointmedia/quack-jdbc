@@ -90,7 +90,9 @@ public class Demo {
 ```
 
 Large results stream: the driver holds one server batch at a time and fetches the next as
-`ResultSet.next()` reaches it. `Statement.cancel()` stops the statement on the server (the
+`ResultSet.next()` reaches it. The first batch is obtained inside `Statement.execute()` so
+DataGrip can cancel the initial query work before result retrieval begins.
+`Statement.cancel()` stops the statement on the server (the
 interrupted call fails with SQLSTATE `57014`), and server errors carry a SQLSTATE derived
 from DuckDB's exception type (`42S02` missing table, `42601` syntax error, `23000`
 constraint violation, ...) with the matching `SQLException` subclass.
@@ -340,10 +342,12 @@ simultaneous login using it fails clearly. Each JDBC connection has its own
 credential holder, so tools that open several connections can start several
 sign-ins. No cross-connection token sharing has been added.
 
-This feature is a local development draft. Register a dedicated public app
-client and query scope before acceptance testing. Actual DataGrip login,
-multiple connections, refresh, revocation and reconnect behavior still need
-verification against the configured identity provider and query service.
+This feature is a development draft. Local DataGrip acceptance has verified browser
+login, token refresh on the same session, restricted catalog discovery, queries and
+cancellation against a permission-enabled test server. The test used a live identity
+provider with synthetic catalog memberships; it does not establish production readiness.
+Overlapping DataGrip sign-ins can contend for the fixed callback port. Multi-connection
+login and deployment-specific revocation/reconnect behavior need further acceptance.
 Browser mode requires a local desktop JVM with system-browser support; a JDBC
 process running on a remote host would receive the callback on that host,
 not on the user's desktop.

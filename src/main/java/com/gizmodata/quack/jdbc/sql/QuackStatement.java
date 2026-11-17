@@ -100,6 +100,9 @@ public class QuackStatement extends SkeletalStatement {
                 currentResultSet = null;
             }
             QuackSession.Cursor cursor = connection.session().cursor(sql, current);
+            // Keep initial execution in the JDBC execute call so IDE cancellation
+            // reaches this statement before result retrieval begins.
+            cursor.peekFirstChunk();
             if (looksLikeRowsAffected(cursor)) {
                 List<DataChunk> chunks = cursor.drainAll();
                 cursor.close();

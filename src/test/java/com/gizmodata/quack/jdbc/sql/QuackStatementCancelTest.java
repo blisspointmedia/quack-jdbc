@@ -37,16 +37,34 @@ class QuackStatementCancelTest {
         }
     }
 
-    @Test void cancellationCanPassAnOutstandingFetch() throws Exception {
+    @Test void cancellationInterruptsInitialFetchBeforeExecuteReturns() throws Exception {
         Peer peer = new Peer("fetch");
         try (QuackConnection c = peer.connect(); Statement s = c.createStatement()) {
             ExecutorService worker = Executors.newSingleThreadExecutor();
             try {
-                Future<SQLException> result = worker.submit(() -> assertThrows(SQLException.class, () -> { try (ResultSet rows = s.executeQuery("SELECT slow")) { rows.next(); } }));
+                Future<SQLException> result = worker.submit(() -> assertThrows(SQLException.class,
+                        () -> s.executeQuery("SELECT slow")));
                 assertTrue(peer.entered.await(3, TimeUnit.SECONDS));
                 s.cancel();
                 assertEquals("57014", result.get(3, TimeUnit.SECONDS).getSQLState());
                 assertFalse(peer.cancels.isEmpty());
+            } finally { peer.release.countDown(); worker.shutdownNow(); }
+        }
+    }
+
+    @Test void cancellationCanPassALaterFetch() throws Exception {
+        Peer peer = new Peer("later-fetch");
+        try (QuackConnection c = peer.connect(); Statement s = c.createStatement();
+             ResultSet rows = s.executeQuery("SELECT slow")) {
+            assertTrue(rows.next());
+            assertEquals(42, rows.getInt(1));
+            ExecutorService worker = Executors.newSingleThreadExecutor();
+            try {
+                Future<SQLException> result = worker.submit(() -> assertThrows(SQLException.class, rows::next));
+                assertTrue(peer.entered.await(3, TimeUnit.SECONDS));
+                s.cancel();
+                assertEquals("57014", result.get(3, TimeUnit.SECONDS).getSQLState());
+                assertEquals(peer.active, peer.cancels.get(0));
             } finally { peer.release.countDown(); worker.shutdownNow(); }
         }
     }
@@ -227,7 +245,7 @@ class QuackStatementCancelTest {
                 release.countDown();
             }
             if (request instanceof QuackMessage.FetchRequest) {
-                if (blocked.equals("fetch")) await();
+                if (blocked.equals("fetch") || blocked.equals("later-fetch")) await();
                 return new QuackMessage.FetchResponse(MessageHeader.of(MessageType.FETCH_RESPONSE),List.of(),OptionalLong.of(0L),OptionalLong.empty());
             }
             return new QuackMessage.SuccessResponse(MessageHeader.of(MessageType.SUCCESS_RESPONSE));
