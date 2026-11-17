@@ -48,6 +48,7 @@ public final class QuackHttpTransport implements QuackTransport {
     private final HttpClient httpClient;
     private final Duration requestTimeout;
     private final Map<String, String> extraHeaders;
+    private final CognitoCredentials credentials;
 
     public QuackHttpTransport(URI endpoint) {
         this(endpoint, HttpClient.newBuilder()
@@ -62,10 +63,16 @@ public final class QuackHttpTransport implements QuackTransport {
 
     public QuackHttpTransport(URI endpoint, HttpClient httpClient, Duration requestTimeout,
                               Map<String, String> extraHeaders) {
+        this(endpoint, httpClient, requestTimeout, extraHeaders, null);
+    }
+
+    QuackHttpTransport(URI endpoint, HttpClient httpClient, Duration requestTimeout,
+                       Map<String, String> extraHeaders, CognitoCredentials credentials) {
         this.endpoint = endpoint;
         this.httpClient = httpClient;
         this.requestTimeout = requestTimeout;
         this.extraHeaders = Map.copyOf(extraHeaders);
+        this.credentials = credentials;
     }
 
     public static QuackHttpTransport from(QuackUri uri) {
@@ -74,7 +81,7 @@ public final class QuackHttpTransport implements QuackTransport {
         uri.sslFingerprint().ifPresent(fp -> builder.sslContext(PinnedTrustManager.sslContext(fp)));
         HttpClient client = builder.build();
         return new QuackHttpTransport(uri.httpUri(), client, uri.requestTimeout(),
-                uri.extraHttpHeaders());
+                uri.extraHttpHeaders(), CognitoCredentials.from(uri));
     }
 
     Duration requestTimeout() {
@@ -87,6 +94,14 @@ public final class QuackHttpTransport implements QuackTransport {
 
     @Override
     public QuackMessage send(QuackMessage request) {
+        // One snapshot supplies both the handshake body and this RPC's HTTP header.
+        // Refresh precedes the request; an auth or transport failure never replays SQL.
+        String token = credentials == null ? null : credentials.token();
+        if (token != null && request instanceof QuackMessage.ConnectionRequest connect) {
+            request = new QuackMessage.ConnectionRequest(connect.header(), Optional.of(token),
+                    connect.clientDuckdbVersion(), connect.clientPlatform(), connect.minSupportedQuackVersion(),
+                    connect.maxSupportedQuackVersion(), connect.clientId(), connect.heartbeatTimeoutSeconds());
+        }
         byte[] body = MessageCodec.encode(request);
 
         URI[] attempts = endpointCandidates();
@@ -99,6 +114,7 @@ public final class QuackHttpTransport implements QuackTransport {
             for (Map.Entry<String, String> header : extraHeaders.entrySet()) {
                 builder.header(header.getKey(), header.getValue());
             }
+            if (token != null) builder.setHeader("Authorization", "Bearer " + token);
             HttpRequest httpRequest = builder
                     .header("Content-Type", QuackConstants.DUCKDB_MIME_TYPE)
                     .header("Accept", QuackConstants.DUCKDB_MIME_TYPE)
@@ -119,6 +135,7 @@ public final class QuackHttpTransport implements QuackTransport {
             }
 
             if (response.statusCode() / 100 != 2) {
+                if (credentials != null && response.statusCode() == 401) credentials.close();
                 StringBuilder message = new StringBuilder("Quack HTTP returned status ")
                         .append(response.statusCode()).append(" from ").append(attempt);
                 // The quack server reports the underlying failure (e.g. a
@@ -138,6 +155,14 @@ public final class QuackHttpTransport implements QuackTransport {
 
         throw new QuackException(buildExhaustedMessage(attempts, lastFailure), lastFailure);
     }
+
+    @Override
+    public void close() {
+        if (credentials != null) credentials.close();
+    }
+
+    @Override
+    public boolean isClosed() { return credentials != null && credentials.isClosed(); }
 
     URI[] endpointCandidates() {
         if ("https".equalsIgnoreCase(endpoint.getScheme())) {

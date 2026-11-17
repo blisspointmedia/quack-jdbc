@@ -111,7 +111,7 @@ public record QuackUri(String host,
             }
         }
         for (String key : params.keySet()) {
-            if (key.startsWith(HTTP_HEADER_PREFIX)) {
+            if (key.startsWith(HTTP_HEADER_PREFIX) || key.equals("authMode") || key.startsWith("oauth")) {
                 throw new QuackException("Quack JDBC property " + key
                         + " is only accepted via connection Properties, not the JDBC URL");
             }
@@ -141,7 +141,10 @@ public record QuackUri(String host,
         if (clientId != null && clientId.length() < 4) {
             throw new QuackException("Quack JDBC property clientId must be empty or at least 4 characters");
         }
-        Optional<String> token = QuackTokenResolver.resolve(params);
+        // Validate browser mode before tokenFile/tokenEnv can read a local secret.
+        CognitoCredentials.Config browser = CognitoCredentials.Config.from(
+                new QuackUri(host, port, database, tls, Optional.empty(), params));
+        Optional<String> token = browser == null ? QuackTokenResolver.resolve(params) : Optional.empty();
 
         QuackUri uri = new QuackUri(host, port, database, tls, token, params);
         if (uri.heartbeatTimeout().compareTo(Duration.ofSeconds(1)) < 0) {

@@ -1,11 +1,15 @@
 # quack-jdbc - by [GizmoData™](https://gizmodata.com)
 
+> **Bliss Point development fork.** The browser-login changes in this branch are unreleased.
+> Upstream download links below do not include them. Build this branch for evaluation;
+> configure deployment-specific endpoints, client IDs and scopes through connection properties.
+
 **A JDBC driver for [DuckDB's Quack remote protocol](https://duckdb.org/docs/current/quack/overview): DBeaver, DataGrip and any Java application on a remote DuckDB 2.0.**
 
 > An independent, open-source project. Not affiliated with, endorsed by, or sponsored by the DuckDB Foundation or DuckDB Labs. "DuckDB" is a trademark of the DuckDB Foundation, used here only to describe compatibility.
 
 [<img src="https://img.shields.io/badge/GitHub-gizmodata%2Fquack--jdbc-blue.svg?logo=Github">](https://github.com/gizmodata/quack-jdbc)
-[![CI](https://github.com/gizmodata/quack-jdbc/actions/workflows/ci.yml/badge.svg)](https://github.com/gizmodata/quack-jdbc/actions/workflows/ci.yml)
+[![CI](https://github.com/blisspointmedia/quack-jdbc/actions/workflows/ci.yml/badge.svg)](https://github.com/blisspointmedia/quack-jdbc/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/com.gizmodata/quack-jdbc?label=Maven%20Central&logo=apachemaven&color=blue)](https://central.sonatype.com/artifact/com.gizmodata/quack-jdbc)
 [![Latest Release](https://img.shields.io/github/v/release/gizmodata/quack-jdbc?label=Latest%20Release&logo=github&sort=semver)](https://github.com/gizmodata/quack-jdbc/releases/latest)
 [![Download latest jar](https://img.shields.io/badge/download-quack--jdbc.jar-success?logo=java&logoColor=white)](https://github.com/gizmodata/quack-jdbc/releases/latest/download/quack-jdbc.jar)
@@ -15,7 +19,7 @@
 [![Hardcharger](https://img.shields.io/badge/works%20with-Hardcharger%E2%84%A2-f15a24.svg)](https://gizmodata.com/hardcharger)
 
 A pure-Java client for Quack, the remote protocol DuckDB 2.0 serves with `quack_serve`. One
-jar with no dependencies (the JDK's own `java.net.http`): connect with a `jdbc:quack://`
+self-contained jar (JDK `java.net.http` plus a relocated JSON parser for OAuth): connect with a `jdbc:quack://`
 URL from DBeaver, DataGrip, IntelliJ, Spark or your own service, browse the catalog, stream
 large results, and bulk-load data into DuckDB tables.
 
@@ -86,7 +90,9 @@ public class Demo {
 ```
 
 Large results stream: the driver holds one server batch at a time and fetches the next as
-`ResultSet.next()` reaches it. `Statement.cancel()` stops the statement on the server (the
+`ResultSet.next()` reaches it. The first batch is obtained inside `Statement.execute()` so
+DataGrip can cancel the initial query work before result retrieval begins.
+`Statement.cancel()` stops the statement on the server (the
 interrupted call fails with SQLSTATE `57014`), and server errors carry a SQLSTATE derived
 from DuckDB's exception type (`42S02` missing table, `42601` syntax error, `23000`
 constraint violation, ...) with the matching `SQLException` subclass.
@@ -273,6 +279,11 @@ jdbc:quack:host[:port]          also accepted (DuckDB's quack:host:port spelling
 | `password` | (none) | Alias for `token`, for tools that show a password field. |
 | `tokenEnv` | (none) | Environment variable that holds the token. Properties only. |
 | `tokenFile` | (none) | Local file that holds the token. Properties only. |
+| `authMode` | token | `browser` opts into Cognito authorization-code/PKCE login. Properties only. |
+| `oauthDomain` | (none) | Cognito managed-login HTTPS origin. Properties only. |
+| `oauthClientId` | (none) | Registered public client ID, without a client secret. Properties only. |
+| `oauthScope` | (none) | `openid email` and the registered query scope. Properties only. |
+| `oauthRedirectPort` | (none) | Registered localhost callback port, 1024–65535. Properties only. |
 | `tls` | on, except for `localhost`, `127.0.0.1`, `::1` | `true` / `false` forces HTTPS / HTTP. `useEncryption` is an alias. |
 | `sslFingerprint` | (none) | Pin the server certificate's SHA-256 fingerprint (64 hex digits; the colon form and a `sha256:` prefix are accepted). Accepts exactly that certificate, so a self-signed `quack_serve` certificate works; implies `tls=true`. `ssl_fingerprint` is an alias. |
 | `heartbeatTimeout` | 60 | Connection lease asked of the server, as seconds or an ISO-8601 duration. The driver renews it about every third of it. |
@@ -285,7 +296,7 @@ Options can go on the URL or in the `java.util.Properties` passed to
 `DriverManager.getConnection`; URL values take precedence. The token comes from `token`,
 then `password`, then `tokenEnv`, then `tokenFile`.
 
-`tokenEnv`, `tokenFile` and `httpHeader.*` are accepted only through `Properties` (or a
+`tokenEnv`, `tokenFile`, `httpHeader.*`, `authMode` and `oauth*` are accepted only through `Properties` (or a
 tool's driver-properties panel) and rejected on the URL: a pasted or shared URL must not be
 able to read a local secret, or add headers, and send them to whatever host it names.
 
@@ -298,6 +309,50 @@ plain driver properties are easy to copy, log or commit by accident. Set `tokenF
 ```text
 tokenFile=/Users/alice/.config/quack/prod.token
 ```
+
+### Browser sign-in and refresh (development draft)
+
+The draft browser mode opens the system browser for Cognito managed login,
+including a configured federated provider. It uses authorization code + PKCE
+with a public client. Tokens stay in the logical connection's memory and
+refresh on demand before RPCs; a failed refresh closes that connection.
+Queries are never replayed to recover from an authentication failure.
+
+Use the locally built development jar and set these as driver properties
+(DataGrip: the data source's driver-properties/Advanced panel):
+
+```text
+authMode=browser
+oauthDomain=https://login.example.com
+oauthClientId=RegisteredPublicClientId
+oauthScope=openid email query.example/read
+oauthRedirectPort=18089
+```
+
+Connect with `jdbc:quack://query.example.com:443?tls=true`, leaving static
+token/password sources and an extra Authorization header unset. Browser mode
+requires TLS to the query endpoint. The server must separately validate the
+access token and enforce the current catalog grants; client configuration does
+not grant access.
+
+Register the exact callback `http://localhost:18089/quack/callback` for that
+public client. The driver binds only `127.0.0.1` during sign-in and closes the
+listener afterward or after two minutes. Connections using the same loaded driver
+take turns signing in; waiting uses that same two-minute budget and can be interrupted.
+Each JDBC connection has its own state, PKCE verifier and credential holder. The lock
+covers browser sign-in only, not token refresh or SQL. A different application or JVM
+using the chosen port still causes a clear connection error. No tokens are shared
+between connections.
+
+This feature is a development draft. Local DataGrip acceptance has verified browser
+login, token refresh on the same session, restricted catalog discovery, queries and
+cancellation against a permission-enabled test server. The test used a live identity
+provider with synthetic catalog memberships; it does not establish production readiness.
+Concurrent callback isolation and queued-login cleanup are covered by local tests.
+Deployment-specific identity, revocation and reconnect behavior need further acceptance.
+Browser mode requires a local desktop JVM with system-browser support; a JDBC
+process running on a remote host would receive the callback on that host,
+not on the user's desktop.
 
 ### Fully custom HTTP transport
 
@@ -333,6 +388,15 @@ catalog, modeled query-for-query on DuckDB's own JDBC driver; the `-Poracle` tes
 - primary keys, imported / exported / cross-reference foreign keys
 - indexes (one row per index; column-level expansion is a DuckDB limitation)
 - `getTypeInfo`, `getFunctions`
+
+A restricted server may deny the exact `duckdb_functions` capability while allowing table
+discovery. In that case, `getFunctions` returns an empty function-description list. Other
+permission, authentication and transport errors still propagate.
+
+Cancellation targets only that statement's execution, including its buffered result delivery.
+Late cancellation of an older statement never selects a newer statement's query ID. Cancelled
+execution uses upstream's SQLState `57014`. An early cancel can arrive before server registration;
+keep a server execution timeout as the fallback. SQL is never replayed after a failure.
 
 Register the driver in **DBeaver → Database → Driver Manager**:
 

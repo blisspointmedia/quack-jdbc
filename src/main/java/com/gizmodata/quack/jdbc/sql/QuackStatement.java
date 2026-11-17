@@ -15,7 +15,8 @@ public class QuackStatement extends SkeletalStatement {
     private final List<String> batch = new ArrayList<>();
     private QuackResultSet currentResultSet;
     private int updateCount = -1;
-    private boolean closed;
+    private volatile boolean closed;
+    private volatile QuackSession.Execution execution;
 
     public QuackStatement(QuackConnection connection) {
         this.connection = connection;
@@ -51,15 +52,17 @@ public class QuackStatement extends SkeletalStatement {
     }
 
     /**
-     * Interrupt the statement running on this connection: sends a Quack
+     * Interrupt this statement's current execution: sends a Quack
      * {@code CANCEL} for it, and the interrupted call fails with SQLSTATE
      * 57014. A no-op when nothing is running.
      */
     @Override
     public void cancel() throws SQLException {
         if (closed) throw new SQLException("Statement is closed");
+        QuackSession.Execution current = execution;
+        if (current == null || !current.active()) return;
         try {
-            connection.session().cancelActive();
+            current.cancel();
         } catch (RuntimeException e) {
             throw QuackSqlExceptions.from(e);
         }
@@ -89,12 +92,17 @@ public class QuackStatement extends SkeletalStatement {
     public boolean execute(String sql) throws SQLException {
         checkOpen();
         connection.beginTransactionIfNeeded();
+        QuackSession.Execution current = connection.session().newExecution();
+        execution = current;
         try {
             if (currentResultSet != null) {
                 currentResultSet.close();
                 currentResultSet = null;
             }
-            QuackSession.Cursor cursor = connection.session().cursor(sql);
+            QuackSession.Cursor cursor = connection.session().cursor(sql, current);
+            // Keep initial execution in the JDBC execute call so IDE cancellation
+            // reaches this statement before result retrieval begins.
+            cursor.peekFirstChunk();
             if (looksLikeRowsAffected(cursor)) {
                 List<DataChunk> chunks = cursor.drainAll();
                 cursor.close();
@@ -106,6 +114,7 @@ public class QuackStatement extends SkeletalStatement {
             currentResultSet = new QuackResultSet(this, cursor);
             return true;
         } catch (RuntimeException e) {
+            current.finish();
             throw QuackSqlExceptions.from(e);
         }
     }
@@ -181,6 +190,10 @@ public class QuackStatement extends SkeletalStatement {
     public void close() {
         if (closed) return;
         closed = true;
+        QuackSession.Execution current = execution;
+        if (current != null) {
+            try { current.cancel(); } catch (RuntimeException ignored) { /* Best-effort close. */ }
+        }
         if (currentResultSet != null) {
             currentResultSet.close();
         }

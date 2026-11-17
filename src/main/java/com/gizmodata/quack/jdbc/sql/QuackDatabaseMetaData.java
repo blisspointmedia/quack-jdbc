@@ -1,5 +1,6 @@
 package com.gizmodata.quack.jdbc.sql;
 
+import com.gizmodata.quack.jdbc.QuackServerException;
 import com.gizmodata.quack.jdbc.transport.QuackUri;
 
 import java.sql.Connection;
@@ -29,7 +30,12 @@ public final class QuackDatabaseMetaData implements DatabaseMetaData {
 
     private ResultSet runQuery(String sql) throws SQLException {
         Statement stmt = connection.createStatement();
-        return stmt.executeQuery(sql);
+        try {
+            return stmt.executeQuery(sql);
+        } catch (SQLException error) {
+            try { stmt.close(); } catch (SQLException cleanup) { error.addSuppressed(cleanup); }
+            throw error;
+        }
     }
 
     // ---- helpers mirroring DuckDB's appendEqualsQual / appendLikeQual / nullPatternToWildcard ----
@@ -277,16 +283,31 @@ public final class QuackDatabaseMetaData implements DatabaseMetaData {
     public ResultSet getFunctions(String catalog, String schemaPattern, String functionNamePattern)
             throws SQLException {
         StringBuilder sb = new StringBuilder();
-        sb.append("SELECT NULL AS \"FUNCTION_CAT\", function_name AS \"FUNCTION_NAME\", ")
-          .append("schema_name AS \"FUNCTION_SCHEM\", description AS \"REMARKS\", ")
-          .append("CASE function_type WHEN 'table' THEN 2 WHEN 'table_macro' THEN 2 ELSE 1 END AS \"FUNCTION_TYPE\" ")
+        sb.append("SELECT NULL::VARCHAR AS \"FUNCTION_CAT\", schema_name AS \"FUNCTION_SCHEM\", ")
+          .append("function_name AS \"FUNCTION_NAME\", description AS \"REMARKS\", ")
+          .append("CASE function_type WHEN 'table' THEN 2 WHEN 'table_macro' THEN 2 ELSE 1 END AS \"FUNCTION_TYPE\", ")
+          .append("function_name AS \"SPECIFIC_NAME\" ")
           .append("FROM duckdb_functions() WHERE TRUE\n");
         appendEqualsQual(sb, "database_name", catalog);
         appendLikeQual(sb, "schema_name", schemaPattern);
         sb.append(" AND function_name LIKE ").append(SqlLiteral.render(nullPatternToWildcard(functionNamePattern)))
           .append(" ESCAPE '\\'\n");
         sb.append("ORDER BY \"FUNCTION_CAT\", \"FUNCTION_SCHEM\", \"FUNCTION_NAME\"");
-        return runQuery(sb.toString());
+        try {
+            return runQuery(sb.toString());
+        } catch (SQLException error) {
+            // A restricted server can withhold function descriptions while still
+            // exposing tables. Do not let this optional metadata stop IDE discovery.
+            // Only this exact capability denial means an empty function list;
+            // authentication, transport and other SQL failures must remain visible.
+            if (!(error.getCause() instanceof QuackServerException server)
+                    || !"Permission".equals(server.getExceptionType())
+                    || !"Function is outside the session capability policy: \"duckdb_functions\"".equals(server.getServerMessage())
+                    || server.mustInvalidate() || connection.isClosed()) throw error;
+            return runQuery("SELECT NULL::VARCHAR AS \"FUNCTION_CAT\", NULL::VARCHAR AS \"FUNCTION_SCHEM\", " +
+                    "NULL::VARCHAR AS \"FUNCTION_NAME\", NULL::VARCHAR AS \"REMARKS\", " +
+                    "NULL::SMALLINT AS \"FUNCTION_TYPE\", NULL::VARCHAR AS \"SPECIFIC_NAME\" WHERE FALSE");
+        }
     }
 
     @Override

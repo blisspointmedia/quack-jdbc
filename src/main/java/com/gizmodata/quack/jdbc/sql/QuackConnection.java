@@ -122,7 +122,7 @@ public final class QuackConnection extends SkeletalConnection {
 
     @Override
     public boolean isClosed() {
-        return closed;
+        return closed || session.isClosed();
     }
 
     @Override
@@ -169,8 +169,8 @@ public final class QuackConnection extends SkeletalConnection {
     }
 
     private void checkOpen() throws SQLException {
-        if (closed) {
-            throw new SQLException("Connection is closed");
+        if (isClosed()) {
+            throw new SQLException("Connection is closed", "08003");
         }
     }
 }
