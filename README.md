@@ -337,17 +337,19 @@ not grant access.
 
 Register the exact callback `http://localhost:18089/quack/callback` for that
 public client. The driver binds only `127.0.0.1` during sign-in and closes the
-listener afterward or after two minutes. The chosen port must be free; another
-simultaneous login using it fails clearly. Each JDBC connection has its own
-credential holder, so tools that open several connections can start several
-sign-ins. No cross-connection token sharing has been added.
+listener afterward or after two minutes. Connections using the same loaded driver
+take turns signing in; waiting uses that same two-minute budget and can be interrupted.
+Each JDBC connection has its own state, PKCE verifier and credential holder. The lock
+covers browser sign-in only, not token refresh or SQL. A different application or JVM
+using the chosen port still causes a clear connection error. No tokens are shared
+between connections.
 
 This feature is a development draft. Local DataGrip acceptance has verified browser
 login, token refresh on the same session, restricted catalog discovery, queries and
 cancellation against a permission-enabled test server. The test used a live identity
 provider with synthetic catalog memberships; it does not establish production readiness.
-Overlapping DataGrip sign-ins can contend for the fixed callback port. Multi-connection
-login and deployment-specific revocation/reconnect behavior need further acceptance.
+Concurrent callback isolation and queued-login cleanup are covered by local tests.
+Deployment-specific identity, revocation and reconnect behavior need further acceptance.
 Browser mode requires a local desktop JVM with system-browser support; a JDBC
 process running on a remote host would receive the callback on that host,
 not on the user's desktop.

@@ -20,6 +20,7 @@ import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -131,6 +132,50 @@ class CognitoCredentialsTest {
         } finally { release.countDown(); executor.shutdownNow(); credentials.close(); }
     }
 
+    @Test void overlappingLoginsKeepTheirOwnCallbackAndPkce() throws Exception {
+        var config = config();
+        AtomicReference<URI> firstAddress = new AtomicReference<>(), secondAddress = new AtomicReference<>();
+        CountDownLatch firstOpened = new CountDownLatch(1), secondEntered = new CountDownLatch(1);
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> LoopbackLogin.authorize(config, uri -> {
+                firstAddress.set(uri);
+                firstOpened.countDown();
+            }, Duration.ofSeconds(5)));
+            assertTrue(firstOpened.await(3, TimeUnit.SECONDS));
+            var second = executor.submit(() -> {
+                secondEntered.countDown();
+                return LoopbackLogin.authorize(config, uri -> {
+                    secondAddress.set(uri);
+                    String oldState = LoopbackLogin.parseQuery(firstAddress.get().getRawQuery()).get("state");
+                    String state = LoopbackLogin.parseQuery(uri.getRawQuery()).get("state");
+                    assertNotEquals(oldState, state);
+                    assertEquals(400, callback(config.redirect(), "state=" + oldState + "&code=wrong-login"));
+                    assertEquals(200, callback(config.redirect(), "state=" + state + "&code=second-code"));
+                }, Duration.ofSeconds(5));
+            });
+            assertTrue(secondEntered.await(3, TimeUnit.SECONDS));
+            assertThrows(TimeoutException.class, () -> second.get(150, TimeUnit.MILLISECONDS));
+            assertNull(secondAddress.get()); // Do not open a browser until its listener is available.
+            String firstState = LoopbackLogin.parseQuery(firstAddress.get().getRawQuery()).get("state");
+            assertEquals(200, callback(config.redirect(), "state=" + firstState + "&code=first-code"));
+            Map<String, String> firstGrant = first.get(3, TimeUnit.SECONDS);
+            Map<String, String> secondGrant = second.get(3, TimeUnit.SECONDS);
+            assertEquals("first-code", firstGrant.get("code"));
+            assertEquals("second-code", secondGrant.get("code"));
+            assertNotEquals(firstGrant.get("code_verifier"), secondGrant.get("code_verifier"));
+            for (var attempt : List.of(Map.entry(firstAddress.get(), firstGrant), Map.entry(secondAddress.get(), secondGrant))) {
+                assertEquals(LoopbackLogin.parseQuery(attempt.getKey().getRawQuery()).get("code_challenge"),
+                        Base64.getUrlEncoder().withoutPadding().encodeToString(MessageDigest.getInstance("SHA-256")
+                                .digest(attempt.getValue().get("code_verifier").getBytes(StandardCharsets.US_ASCII))));
+            }
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+        try (ServerSocket ignored = new ServerSocket(config.port(), 1, InetAddress.getByName("127.0.0.1"))) { }
+    }
+
     @Test void failedRefreshDoesNotReuseOldCredentialsOrReopenBrowser() throws Exception {
         AtomicLong clock = new AtomicLong();
         AtomicInteger browsers = new AtomicInteger(), exchanges = new AtomicInteger();
@@ -144,6 +189,44 @@ class CognitoCredentialsTest {
         assertThrows(QuackException.class, credentials::token);
         assertEquals(2, exchanges.get());
         assertEquals(1, browsers.get());
+    }
+
+    @Test void queuedLoginTimeoutAndInterruptionLeaveTheActiveLoginAlone() throws Exception {
+        var config = config();
+        AtomicReference<URI> address = new AtomicReference<>();
+        CountDownLatch opened = new CountDownLatch(1), waiting = new CountDownLatch(1), finished = new CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicBoolean interrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        var executor = Executors.newFixedThreadPool(2);
+        try {
+            var active = executor.submit(() -> LoopbackLogin.authorize(config, uri -> {
+                address.set(uri);
+                opened.countDown();
+            }, Duration.ofSeconds(5)));
+            assertTrue(opened.await(3, TimeUnit.SECONDS));
+            assertTrue(assertThrows(QuackException.class, () -> LoopbackLogin.authorize(config,
+                    uri -> fail("queued login must not open a browser"), Duration.ofMillis(30)))
+                    .getMessage().contains("waiting for another browser sign-in"));
+            var queued = executor.submit(() -> {
+                try {
+                    waiting.countDown();
+                    assertThrows(QuackException.class, () -> LoopbackLogin.authorize(config,
+                            uri -> fail("interrupted login must not open a browser"), Duration.ofSeconds(5)));
+                    interrupted.set(Thread.currentThread().isInterrupted());
+                } finally { finished.countDown(); }
+            });
+            assertTrue(waiting.await(3, TimeUnit.SECONDS));
+            queued.cancel(true);
+            assertTrue(finished.await(3, TimeUnit.SECONDS));
+            assertTrue(interrupted.get());
+            assertFalse(active.isDone());
+            String state = LoopbackLogin.parseQuery(address.get().getRawQuery()).get("state");
+            assertEquals(200, callback(config.redirect(), "state=" + state + "&code=active-code"));
+            assertEquals("active-code", active.get(3, TimeUnit.SECONDS).get("code"));
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS));
+        }
+        try (ServerSocket ignored = new ServerSocket(config.port(), 1, InetAddress.getByName("127.0.0.1"))) { }
     }
 
     @Test void missingRefreshTokenAndLateTokenResponseFailClosed() throws Exception {

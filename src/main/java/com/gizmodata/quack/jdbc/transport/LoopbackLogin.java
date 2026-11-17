@@ -20,14 +20,38 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 /** Short-lived loopback receiver for a public client's authorization-code/PKCE exchange. */
 final class LoopbackLogin {
     private static final SecureRandom RANDOM = new SecureRandom();
+    private static final ReentrantLock SIGN_IN = new ReentrantLock(true);
 
     static Map<String, String> authorize(CognitoCredentials.Config config, Consumer<URI> browser, Duration timeout) {
+        long deadline = System.nanoTime() + timeout.toNanos();
+        boolean acquired = false;
+        try {
+            // IDE connections share a callback port, but never share credentials.
+            if (!SIGN_IN.tryLock(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS)) {
+                throw new QuackException("Timed out waiting for another browser sign-in; reconnect to try again");
+            }
+            acquired = true;
+            if (deadline - System.nanoTime() <= 0) {
+                throw new QuackException("Browser sign-in timed out; reconnect to try again");
+            }
+            return authorizeWithListener(config, browser, deadline);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new QuackException("Browser sign-in was interrupted");
+        } finally {
+            if (acquired) SIGN_IN.unlock();
+        }
+    }
+
+    private static Map<String, String> authorizeWithListener(CognitoCredentials.Config config, Consumer<URI> browser,
+                                                            long deadline) {
         String state = random();
         String verifier = random();
         String challenge;
@@ -48,7 +72,7 @@ final class LoopbackLogin {
             browser.accept(config.domain().resolve("/oauth2/authorize?" + form(Map.of(
                     "response_type", "code", "client_id", config.clientId(), "redirect_uri", config.redirect().toString(),
                     "scope", config.scope(), "state", state, "code_challenge", challenge, "code_challenge_method", "S256"))));
-            String value = code.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            String value = code.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             return Map.of("grant_type", "authorization_code", "redirect_uri", config.redirect().toString(),
                     "code", value, "code_verifier", verifier);
         } catch (InterruptedException e) {

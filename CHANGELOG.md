@@ -16,6 +16,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Bind cancellation to each statement's execution, including early/late cancellation and buffered results.
 - Obtain the first result batch during `Statement.execute()` so DataGrip can cancel initial
   query work; later batches continue to stream through `ResultSet.next()`.
+- Serialize browser sign-ins within the loaded driver so concurrent connections do not race
+  for the callback port. Waiting shares the sign-in deadline; credentials stay per connection.
 - Continue IDE table discovery when the server explicitly withholds optional function metadata,
   while preserving other authorization and transport errors.
 
