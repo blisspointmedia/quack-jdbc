@@ -62,6 +62,7 @@ public final class QuackResultSet extends SkeletalResultSet {
         checkOpen();
         if (exhausted) return false;
         try {
+            cursor.checkCancelled();
             if (currentChunk == null) {
                 currentChunk = cursor.nextChunk();
                 rowInChunk = 0;

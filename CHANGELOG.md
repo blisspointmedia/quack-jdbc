@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Optional Cognito browser login with authorization code/PKCE and in-memory token refresh.
+  Deployment settings are supplied through JDBC connection properties.
+
+### Fixed
+
+- Bind cancellation to each statement's execution, including early/late cancellation and buffered results.
+- Continue IDE table discovery when the server explicitly withholds optional function metadata,
+  while preserving other authorization and transport errors.
+
+
 ## [1.0.1] - 2026-11-10
 
 ### Fixed

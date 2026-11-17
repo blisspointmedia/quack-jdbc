@@ -22,6 +22,7 @@ public final class QuackSqlExceptions {
      * subclass); anything else is a connection failure, 08006.
      */
     public static SQLException from(RuntimeException e) {
+        if (e instanceof QuackSession.Cancelled) return of(e.getMessage(), "57014", e);
         for (Throwable t = e; t != null; t = t.getCause()) {
             if (t instanceof QuackServerException se) {
                 return of(e.getMessage(), se.sqlState(), e);

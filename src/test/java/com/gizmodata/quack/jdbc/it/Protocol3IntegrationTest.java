@@ -202,7 +202,8 @@ class Protocol3IntegrationTest {
             Object result = run.get(10, TimeUnit.SECONDS);
             SQLException e = assertInstanceOf(SQLException.class, result, "the statement should have been interrupted");
             assertEquals("57014", e.getSQLState(), e.getMessage());
-            assertTrue(e.getMessage().toLowerCase().contains("interrupt"), e.getMessage());
+            assertTrue(e.getMessage().toLowerCase().contains("interrupt")
+                    || e.getMessage().toLowerCase().contains("cancel"), e.getMessage());
             // the connection is still usable afterwards
             try (ResultSet rs = s.executeQuery("SELECT 1")) {
                 assertTrue(rs.next());

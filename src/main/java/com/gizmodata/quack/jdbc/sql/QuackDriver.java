@@ -128,9 +128,21 @@ public final class QuackDriver implements Driver {
         clientId.description = "Client id sent in the handshake (at least 4 characters).";
         clientId.required = false;
 
+        DriverPropertyInfo authMode = new DriverPropertyInfo("authMode", info != null ? info.getProperty("authMode", "token") : "token");
+        authMode.choices = new String[]{"token", "browser"};
+        authMode.description = "Browser sign-in with in-memory OAuth refresh, or the existing static token authentication.";
+        DriverPropertyInfo oauthDomain = new DriverPropertyInfo("oauthDomain", info != null ? info.getProperty("oauthDomain") : null);
+        oauthDomain.description = "Cognito HTTPS login domain; connection properties only.";
+        DriverPropertyInfo oauthClientId = new DriverPropertyInfo("oauthClientId", info != null ? info.getProperty("oauthClientId") : null);
+        oauthClientId.description = "Dedicated public query OAuth client ID, without a client secret.";
+        DriverPropertyInfo oauthScope = new DriverPropertyInfo("oauthScope", info != null ? info.getProperty("oauthScope") : null);
+        oauthScope.description = "Registered query scope plus openid email, separated by spaces.";
+        DriverPropertyInfo oauthRedirectPort = new DriverPropertyInfo("oauthRedirectPort", info != null ? info.getProperty("oauthRedirectPort") : null);
+        oauthRedirectPort.description = "Registered port for http://localhost:<port>/quack/callback; listener exists only during sign-in.";
+
         return new DriverPropertyInfo[]{
                 token, password, tokenEnv, tokenFile, tls, sslFingerprint, heartbeatTimeout, clientId,
-                connectTimeout, requestTimeout
+                connectTimeout, requestTimeout, authMode, oauthDomain, oauthClientId, oauthScope, oauthRedirectPort
         };
     }
 
